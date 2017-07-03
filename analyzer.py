@@ -6,109 +6,118 @@ stops being true and if I were a good developer (it wouldn't have happened in
 the first place) I would update this documentation.
 """
 import operator
-
+import os
 import time
+from collections import defaultdict
 
-import poloniex_apis.trading_api as trading_api
-import utils
+import printer
 from poloniex_apis import public_api
+from poloniex_apis import trading_api
 from poloniex_apis.api_models.balances import Balances
 from poloniex_apis.api_models.deposit_withdrawal_history import DWHistory
-from poloniex_apis.api_models.ticker_price import TickerPrice
+from poloniex_apis.api_models.lending_history import LendingHistory
+from poloniex_apis.api_models.ticker_price import TickerData
 from poloniex_apis.api_models.trade_history import TradeHistory
 from poloniex_apis.public_api import return_usd_btc
 
 
 def get_overview():
-    balances = Balances(trading_api.return_complete_balances())
+    clear = lambda: os.system('clear')
+    clear()
+
+    balances = Balances()
     dw_history = DWHistory(trading_api.return_deposits_withdrawals())
     deposits, withdrawals = dw_history.get_dw_history()
-    utils.print_dw_history(deposits, withdrawals)
-    balance = dw_history.get_btc_balance(public_api.return_ticker())
+    printer.print_dw_history(deposits, withdrawals)
+    balance = dw_history.get_btc_balance(TickerData())
     current = balances.get_btc_total()
-
     usd_btc_price = return_usd_btc()
     balance_percentage = float("{:.4}".format(current / balance * 100))
     btc_balance_sum = current - balance
     usd_balance_sum = "{:.2f}".format(btc_balance_sum * usd_btc_price)
 
-    print "---Earnings/Losses Against Balance--"
-    print "{} BTC/${}".format(btc_balance_sum, usd_balance_sum)
-    if balance_percentage < 100:
-        print "Stop trading!"
-        print "{}%".format(balance_percentage)
-    elif balance_percentage < 110:
-        print "Still worse than an index."
-        print "{}%".format(balance_percentage)
-    elif balance_percentage < 150:
-        print "Not bad"
-        print "{}%".format(balance_percentage)
-    elif balance_percentage < 175:
-        print "You belong here"
-        print "{}%".format(balance_percentage)
-    elif balance_percentage < 200:
-        print "Like striking crypto-oil"
-        print "{}%".format(balance_percentage)
-    elif balance_percentage < 250:
-        print "On your way to becoming a bitcoin millionaire"
-        print "{}%".format(balance_percentage)
-    else:
-        print "Cryptocurrencies can get heavy, you should send them over to me for safe keeping!"
-        print "{}%".format(balance_percentage)
+    printer.print_get_overview_results(
+        btc_balance_sum=btc_balance_sum,
+        usd_balance_sum=usd_balance_sum,
+        balance_percentage=balance_percentage
+    )
 
 
 def get_detailed_overview():
-    ticker_price = TickerPrice(public_api.return_ticker())
-    trade_history = trading_api.return_trade_history()
-    print "Warning, if you made non BTC trades, for example, ETH to ETC, some"
-    print "of the values may look unusual. Since non BTC trades have not been"
-    print "calculated in."
-    for ticker in trade_history:
-        if ticker.startswith("BTC_"):
-            current = list(reversed(trade_history[ticker]))
-            btc_sum = 0
-            for trade in current:
-                if trade['type'] == 'buy':
-                    btc_sum += float(trade["total"])
-                else:
-                    # For some reason, the total for sells do not include the
-                    # fee so we include it here.
-                    btc_sum -= (float(trade["total"]) * (1 - float(trade["fee"])))
+    clear = lambda: os.system('clear')
+    clear()
+    ticker_data = TickerData()
+    trade_history = TradeHistory().history
 
-            ticker_sum = 0
-            for trade in current:
-                if trade['type'] == 'buy':
-                    ticker_sum += float(trade["amount"])  # Total
-                    ticker_sum -= float(trade["amount"]) * float(trade["fee"])  # Fee
-                else:
-                    ticker_sum -= float(trade["amount"])
-            if ticker_sum > 0.000000001:
-                current_btc_sum = float(ticker_price.get_price_for_ticker(ticker)) * ticker_sum
-                total_btc = current_btc_sum - btc_sum
-                total_usd = float("{:.4}".format(total_btc * ticker_price.get_price_for_ticker("USDT_BTC")))
-                print "--------------{}----------------".format(ticker)
-                print "You invested {} BTC for {} {}/{} BTC".format(btc_sum, ticker_sum, ticker.split("_")[1],
-                                                                    current_btc_sum)
-                print "If you sold it all at the current price (assuming enough sell orders)"
+    print("Note: The values below are for the particular currency pair you traded"
+          " against. For example, if you traded BTC_ETH -> ETH_ETC -> ETC_BTC"
+          "you will only see the value traded against each pair in isolation.")
+    for pair in trade_history:
+        transaction, settlement = pair.split("_")[0], pair.split("_")[1]
+        transaction_sum = 0
+        settlement_sum = 0
 
-                if total_btc < 0:
-                    print utils.bcolors.RED,
-                else:
-                    print utils.bcolors.GREEN,
-                print "{} BTC/{} USD".format(total_btc, total_usd)
-                print utils.bcolors.END_COLOR,
+        cross_pair = list(trade_history[pair])
+        for trade in cross_pair:
+            if trade['type'] == 'buy':
+                transaction_sum += float(trade["total"])
+                settlement_sum += float(trade["amount"])  # Total
+                settlement_sum -= float(trade["amount"]) * float(trade["fee"])  # Fee
+            else:
+                # For some reason, the total for sells do not include the
+                # fee so we include it here.
+                transaction_sum -= (float(trade["total"]) * (1 - float(trade["fee"])))
+                settlement_sum -= float(trade["amount"])
 
-    return current
+        if settlement_sum > -1:  # Set to 0.000001 to hide 0 balances
+            transaction_equivalent = float(ticker_data.get_price(pair)) * settlement_sum
+            transaction_balance = transaction_equivalent - transaction_sum
+            total_usd = float("{:.4}".format(transaction_balance * ticker_data.get_price("USDT_" + transaction)))
+            print("--------------{}----------------".format(pair))
+            print("Over your account's lifetime, you have invested {} {}".format(transaction_sum, transaction))
+            print("to achieve your current balance of {} {}/{} {}".format(settlement_sum, settlement, transaction_equivalent, transaction))
+            print("If you sold it all at the current price (assuming enough sell orders)")
+
+            if transaction_balance < 0:
+                print(printer.bcolors.RED, end=' ')
+            else:
+                print(printer.bcolors.GREEN, end=' ')
+            print("{} {}/{} USDT".format(transaction_balance, transaction, total_usd))
+            print(printer.bcolors.END_COLOR, end=' ')
 
 
 def calculate_fees():
     # TODO Should this take in the data models or call it itself
-    trade_history = TradeHistory(trading_api.return_trade_history())
+    trade_history = TradeHistory()
     all_fees = trade_history.get_all_fees()
+    ticker_data = TickerData()
 
-    print "--------------All Fees--------------"
-    for stock, fees in all_fees.iteritems():
-        print "{}={}".format(stock, fees)
+    fee_dict = defaultdict(float)
+
+    clear = lambda: os.system('clear')
+    clear()
+
+    print("--------------All Fees--------------")
+    for currency_pair, fees in all_fees.items():
+        base_currency = currency_pair.split("_")[0]
+        print("{}={} {}".format(currency_pair, fees, base_currency))
+        fee_dict[base_currency] += fees
+    total_fees = 0
+    print(printer.bcolors.GREEN, "--------Total per base Market--------")
+    print(printer.bcolors.END_COLOR, end='')
+    for currency, fees in fee_dict.items():
+        print("{}={}".format(currency, fees))
+    print(printer.bcolors.GREEN, "-------------Total Fees-------------")
+    print(printer.bcolors.END_COLOR, end='')
+    for currency, fees in fee_dict.items():
+        # Every base coin will have USDT pairing.
+        if currency == "USDT":
+            total_fees += fees
+        else:
+            total_fees += float(ticker_data.get_price("USDT_" + currency)) * fees
+    print("Total fees in USDT= {}".format(total_fees))
+    # Convert USDT to BTC for BTC total
+    print("Total fees in BTC= {}".format(total_fees / float(ticker_data.get_price("USDT_BTC"))))
 
 
 def get_change_over_time():
@@ -116,7 +125,23 @@ def get_change_over_time():
     Returns a list of currencies whose volume is over the threshold.
     :return:
     """
-    threshold = 1000
+    clear = lambda: os.system('clear')
+    clear()
+
+    print(printer.bcolors.GREEN, "")
+    print(" ___     _       ___ _____ ___                  _       _   ")
+    print("| _ \___| |___  | _ )_   _/ __|  _ __  __ _ _ _| |_____| |_ ")
+    print("|  _/ _ \ / _ \ | _ \ | || (__  | '  \/ _` | '_| / / -_)  _|")
+    print("|_| \___/_\___/ |___/ |_| \___| |_|_|_\__,_|_| |_\_\___|\__|")
+    print(printer.bcolors.END_COLOR, end="                                    	      by Criptonauta")
+    print('                                                            ')
+
+    threshold = input('Inform the minimum BTC volume (default: 1000 BTC): ')
+    print("")
+    if threshold == '':
+        threshold = 1000
+    else:
+        threshold = int(threshold)
     currency_list = []
 
     volume_data = public_api.return_24_hour_volume()
@@ -130,8 +155,14 @@ def get_change_over_time():
         currencies[currency_pair] = float(volume_data.get(currency_pair).get(u'BTC'))
     sorted_currencies = sorted(currencies.items(), key=operator.itemgetter(1), reverse=True)
 
+    ## Candlestick period valid values are:
+    ## 300 (5 minutes), 900 (15 minutes), 1800 (30 minutes), 7200 (2 hours), 14400 (4 hours), and 86400 (1 day)
     period = 300
-    print "Change over time for BTC traded currencies with volume > 1000 BTC"
+
+    time_segments = [3600, 86400, 172800, 259200, 345600, 604800]
+
+    print("Change over time for BTC traded currencies with volume > "+ str(threshold) +" BTC")
+    print("")
     for currency in sorted_currencies:
         now = int(time.time())
         last_week = now - 604800
@@ -140,22 +171,246 @@ def get_change_over_time():
             currency_pair=currency[0],
             start=last_week,
         )
-        print "Currency: {}, Volume: {}".format(currency[0], currency[1])
-        print "  1H: {}, 24H: {}, 2D: {}, 3D: {}, 4D: {}, 1W: {}".format(
-            _to_percent_change(history[-1]['close']/history[-(3600/period-1)]['close']),
-            _to_percent_change(history[-1]['close']/history[-(86400/period-1)]['close']),
-            _to_percent_change(history[-1]['close']/history[-(172800/period-1)]['close']),
-            _to_percent_change(history[-1]['close']/history[-(259200/period-1)]['close']),
-            _to_percent_change(history[-1]['close']/history[-(345600/period-1)]['close']),
-            _to_percent_change(history[-1]['close']/history[-(604800/period-1)]['close']),
+        time_segment_changes = []
+        for segment in time_segments:
+            try:
+                time_segment_changes.append(
+                    _to_percent_change(history[-1]['close'] /
+                                       history[-int((segment / period - 1))]['close']))
+            except KeyError:
+                time_segment_changes.append("No data")
+
+        print("Currency: {}, Volume: {}".format(currency[0], currency[1]))
+        print("  1H: {}, 24H: {}, 2D: {}, 3D: {}, 4D: {}, 1W: {}".format(*time_segment_changes))
+        time.sleep(2)
+
+
+def get_ETH_over_time():
+    """
+    Returns a list of currencies whose volume is over the threshold.
+    :return:
+    """
+    clear = lambda: os.system('clear')
+    clear()
+
+    print(printer.bcolors.GREEN, "")
+    print(" ___     _       ___ _____ _  _                  _       _   ")
+    print("| _ \___| |___  | __|_   _| || |  _ __  __ _ _ _| |_____| |_ ")
+    print("|  _/ _ \ / _ \ | _|  | | | __ | | '  \/ _` | '_| / / -_)  _|")
+    print("|_| \___/_\___/ |___| |_| |_||_| |_|_|_\__,_|_| |_\_\___|\__|")
+    print(printer.bcolors.END_COLOR, end="                                                by Criptonauta ")
+    print("                                                           ")
+
+    threshold = input('Inform the minimum ETH volume (default: 450 ETH): ')
+    print("")
+    if threshold == '':
+        threshold = 450
+    else:
+        threshold = int(threshold)
+    currency_list = []
+
+    volume_data = public_api.return_24_hour_volume()
+    for item in volume_data:
+        if item.startswith('ETH'):
+            if float(volume_data.get(item).get('ETH')) > threshold:
+                currency_list.append(item)
+
+    currencies = {}
+    for currency_pair in currency_list:
+        currencies[currency_pair] = float(volume_data.get(currency_pair).get(u'ETH'))
+    sorted_currencies = sorted(currencies.items(), key=operator.itemgetter(1), reverse=True)
+
+    ## Candlestick period valid values are:
+    ## 300 (5 minutes), 900 (15 minutes), 1800 (30 minutes), 7200 (2 hours), 14400 (4 hours), and 86400 (1 day)
+    period = 300
+
+    time_segments = [3600, 86400, 172800, 259200, 345600, 604800]
+
+    print("Change over time for ETH traded currencies with volume > "+ str(threshold) +" ETH")
+    print("")
+    for currency in sorted_currencies:
+        now = int(time.time())
+        last_week = now - 604800
+        history = public_api.return_chart_data(
+            period=period,
+            currency_pair=currency[0],
+            start=last_week,
         )
-        time.sleep(1)
+        time_segment_changes = []
+        for segment in time_segments:
+            try:
+                time_segment_changes.append(
+                    _to_percent_change(history[-1]['close'] /
+                                       history[-int((segment / period - 1))]['close']))
+            except KeyError:
+                time_segment_changes.append("No data")
+
+        print("Currency: {}, Volume: {}".format(currency[0], currency[1]))
+        print("  1H: {}, 24H: {}, 2D: {}, 3D: {}, 4D: {}, 1W: {}".format(*time_segment_changes))
+        time.sleep(2)
+
+
+def get_XMR_over_time():
+    """
+    Returns a list of currencies whose volume is over the threshold.
+    :return:
+    """
+    clear = lambda: os.system('clear')
+    clear()
+    print(printer.bcolors.GREEN, "___     _      __  ____  __ ___                  _       _   ")
+    print("| _ \___| |___  \ \/ /  \/  | _ \  _ __  __ _ _ _| |_____| |_ ")
+    print("|  _/ _ \ / _ \  >  <| |\/| |   / | '  \/ _` | '_| / / -_)  _|")
+    print("|_| \___/_\___/ /_/\_\_|  |_|_|_\ |_|_|_\__,_|_| |_\_\___|\__|")
+    print(printer.bcolors.END_COLOR, end="                                                by Criptonauta")
+    print("                                            	   	     ")
+
+    threshold = input('Inform the minimum XMR volume (default: 300 XMR): ')
+    print("")
+    if threshold == '':
+        threshold = 300
+    else:
+        threshold = int(threshold)
+    currency_list = []
+
+    volume_data = public_api.return_24_hour_volume()
+    for item in volume_data:
+        if item.startswith('XMR'):
+            if float(volume_data.get(item).get('XMR')) > threshold:
+                currency_list.append(item)
+
+    currencies = {}
+    for currency_pair in currency_list:
+        currencies[currency_pair] = float(volume_data.get(currency_pair).get(u'XMR'))
+    sorted_currencies = sorted(currencies.items(), key=operator.itemgetter(1), reverse=True)
+
+    ## Candlestick period valid values are:
+    ## 300 (5 minutes), 900 (15 minutes), 1800 (30 minutes), 7200 (2 hours), 14400 (4 hours), and 86400 (1 day)
+    period = 7200
+
+    time_segments = [3600, 86400, 172800, 259200, 345600, 604800]
+
+    print("Change over time for XMR traded currencies with volume > "+ str(threshold) +" XMR")
+    print("")
+    for currency in sorted_currencies:
+        now = int(time.time())
+        last_week = now - 604800
+        history = public_api.return_chart_data(
+            period=period,
+            currency_pair=currency[0],
+            start=last_week,
+        )
+        time_segment_changes = []
+        for segment in time_segments:
+            try:
+                time_segment_changes.append(
+                    _to_percent_change(history[-1]['close'] /
+                                       history[-int((segment / period - 1))]['close']))
+            except KeyError:
+                time_segment_changes.append("No data")
+
+        print("Currency: {}, Volume: {}".format(currency[0], currency[1]))
+        print("  1H: {}, 24H: {}, 2D: {}, 3D: {}, 4D: {}, 1W: {}".format(*time_segment_changes))
+        time.sleep(2)
+
+
+def get_USDT_over_time():
+    """
+    Returns a list of currencies whose volume is over the threshold.
+    :return:
+    """
+    clear = lambda: os.system('clear')
+    clear()
+
+    print(printer.bcolors.GREEN, "")
+    print(" ___     _       _   _ ___ ___ _____                 _       _    ")
+    print("| _ \___| |___  | | | / __|   \_   _| _ __  __ _ _ _| |_____| |_  ")
+    print("|  _/ _ \ / _ \ | |_| \__ \ |) || |  | '  \/ _` | '_| / / -_)  _| ")
+    print("|_| \___/_\___/  \___/|___/___/ |_|  |_|_|_\__,_|_| |_\_\___|\__| ")
+    print(printer.bcolors.END_COLOR, end="                                                   by Criptonauta ")
+    print("                                                              ")
+
+    threshold = input('Inform the minimum USDT volume (default:600,000 USDT): ')
+    print("")
+    if threshold == '':
+        threshold = 600000
+    else:
+        threshold = int(threshold)
+    currency_list = []
+
+    volume_data = public_api.return_24_hour_volume()
+    for item in volume_data:
+        if item.startswith('USDT'):
+            if float(volume_data.get(item).get('USDT')) > threshold:
+                currency_list.append(item)
+
+    currencies = {}
+    for currency_pair in currency_list:
+        currencies[currency_pair] = float(volume_data.get(currency_pair).get(u'USDT'))
+    sorted_currencies = sorted(currencies.items(), key=operator.itemgetter(1), reverse=True)
+
+    ## Candlestick period valid values are:
+    ## 300 (5 minutes), 900 (15 minutes), 1800 (30 minutes), 7200 (2 hours), 14400 (4 hours), and 86400 (1 day)
+    period = 300
+
+    time_segments = [3600, 86400, 172800, 259200, 345600, 604800]
+
+    print("Change over time for USDT traded currencies with volume > "+ str(threshold) +" USDT")
+    print("")
+    for currency in sorted_currencies:
+        now = int(time.time())
+        last_week = now - 604800
+        history = public_api.return_chart_data(
+            period=period,
+            currency_pair=currency[0],
+            start=last_week,
+        )
+        time_segment_changes = []
+        for segment in time_segments:
+            try:
+                time_segment_changes.append(
+                    _to_percent_change(history[-1]['close'] /
+                                       history[-int((segment / period - 1))]['close']))
+            except KeyError:
+                time_segment_changes.append("No data")
+
+        print("Currency: {}, Volume: {}".format(currency[0], currency[1]))
+        print("  1H: {}, 24H: {}, 2D: {}, 3D: {}, 4D: {}, 1W: {}".format(*time_segment_changes))
+        time.sleep(2)
+
+
+
+def get_lending_history():
+    clear = lambda: os.system('clear')
+    clear()
+    lending_history = LendingHistory()
+    data = {}
+    for loan in lending_history.history:
+        if not loan['currency'] in data:
+            data[loan['currency']] = defaultdict()
+            data[loan['currency']]['earnings'] = 0
+            data[loan['currency']]['fees'] = 0
+            data[loan['currency']]['amount'] = 0
+            data[loan['currency']]['duration'] = 0
+            data[loan['currency']]['weighted_rate'] = 0
+
+        data[loan['currency']]['earnings'] += float(loan['earned'])
+        data[loan['currency']]['fees'] += float(loan['fee'])
+        data[loan['currency']]['amount'] += float(loan['amount'])
+        data[loan['currency']]['duration'] += float(loan['duration'])
+        data[loan['currency']]['weighted_rate'] += float(loan['rate']) * float(loan['duration'])
+
+    for currency in data:
+        average_rate = float("{:.4}".format(data[currency]['weighted_rate'] / data[currency]['duration'] * 100))
+        printer.print_get_lending_history(
+            currency=currency,
+            earnings=data[currency]['earnings'],
+            fees=data[currency]['fees'],
+            average_rate=average_rate
+        )
 
 
 def _to_percent_change(number):
     if not isinstance(number, float):
         number = float(number)
     return "{:.2f}%".format(number * 100 - 100)
-
-
 
